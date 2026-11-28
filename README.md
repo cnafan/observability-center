@@ -64,31 +64,85 @@ Langfuse 内嵌视图已按需求移除；Langfuse 仍可从「三方可观测�
   Agent 5）；采样值与图表见 Metric 页签。
 
 真实栈接入后注入 `window.__OPENAN_OBS_DATA_URL__` 切换实时数据。
-统一查询服务的接口边界和首批 API 定义见
-[`observability-query-service/`](observability-query-service/)。
 
 ### 字体规范
 
 可观测界面所有文字（含图表坐标轴、图例、徽章、属性表、拓扑节点标签等 SVG 文字）
 字号一律 **≥ 12px**（拓扑 SVG 按渲染缩放做了补偿，渲染字号同样 ≥ 12px）。
 
-### 数据源与真实栈接入路径
+### 数据源与查询服务接入
 
-当前页面读取随插件打包的模拟数据集 `mock-collab-tasks.json`（由
-`scripts/gen-mock-tasks.mjs` 在构建时按 **consumer-smoke 方式**生成，信号形状与
-[observability-sdk-java](https://github.com/project-openan/observability-sdk-java) 存储栈
-（deploy/local-storage：Prometheus+Thanos / OpenSearch+Data Prepper / Jaeger v2）一致：
-trace=协作任务轨迹、metric=`gen_ai.agent.a2at.*`、log=`gen_ai.agent.a2at.message`）。
+插件有两种数据源，**代码里不硬编码任何服务地址**，由运行时配置决定：
 
-存储栈部署并通过 nginx 暴露查询 API 后，无需改组件：在门户页面注入
+| 数据源 | 触发条件 | 数据形状 |
+|---|---|---|
+| 内置模拟数据 | 未配置查询服务地址 | `mock-collab-tasks.json`（`scripts/gen-mock-tasks.mjs` 构建时生成，consumer-smoke 方式） |
+| Observability Workflow Query Service | 配置了 `baseUrl` | OTLP `resourceSpans` / `LogRecord` + Prometheus range 序列 |
+
+#### 配置方式（优先级从高到低）
 
 ```js
-window.__OPENAN_OBS_DATA_URL__ = '<真实数据端点>';
+// 1) URL 查询参数（临时切换、联调最方便）
+//    /observation?obsApi=https://<query-service-host>&obsInsecure=1
+
+// 2) 全局变量（门户侧注入，推荐用于正式环境）
+window.__OPENAN_OBS_API__ = {
+  baseUrl: 'https://<query-service-host>',   // 不含路径；插件自动拼接 /api/v1/observability/...
+  timeoutMs: 20000,                          // 可选
+  limit: 50,                                 // 可选，列表条数 1–100
+};
+
+// 3) 兼容旧配置：__OPENAN_OBS_DATA_URL__ 若不是 .json 地址，也当作查询服务 baseUrl
 ```
 
-即可切换（组件按 Jaeger `/api/traces` + Prometheus `/api/v1` 形状消费）。
-注意：门户服务器（47.236.98.226）磁盘已 100% 满、内存紧张，暂无法承载该存储栈，
-需先清理磁盘或另选主机部署。
+部署到新环境只需改上述配置，**无需重新构建插件**。
+
+#### 使用的接口
+
+| 用途 | 方法与路径 |
+|---|---|
+| 健康检查 | `GET /api/observability/healthz` |
+| Workflow 列表 | `POST /api/v1/observability/workflows` |
+| Workflow 详情（含 PSOP） | `GET /api/v1/observability/workflows/{runId}` |
+| Trace | `POST /api/v1/observability/workflows/{runId}/trace` |
+| Log | `POST /api/v1/observability/workflows/{runId}/logs` |
+| Metric | `POST /api/v1/observability/workflows/{runId}/metrics` |
+
+列表页只调列表接口；用户选中某个运行后，才并行拉取后 4 个接口组装详情。
+
+#### 代码结构
+
+```
+src/lib/config.js              运行时配置入口（读全局变量 / 查询参数），唯一知道"地址从哪来"的地方
+src/services/obs-api.js        纯 HTTP 客户端，只认 baseUrl；含 OTLP AnyValue 解码
+src/services/obs-adapter.js    纯函数：查询服务响应 → 视图模型（span 层级推导、日志分类、指标归并）
+src/services/metric-map.js     指标目录 ↔ 查询服务信号的名称映射 + 图表数据转换
+src/hooks/useCollabTasks.js    数据源 Hook：按是否配置自动选择 API / 模拟数据
+src/services/__tests__/        单测（对真实响应快照）与端到端测试
+```
+
+#### 适配层处理的真实数据特征（以实测为准，文档未写明）
+
+- **Span 没有 `parentSpanId`**：层级按时间区间推导。同一 service 可有两个 `a2at.workflow`
+  （外层编排 + 内层 PSOP 执行），被委托的子流程（另一 service）在时间上被主流程的某个步骤完整包住。
+- **日志没有 category / 可用时间戳 / 级别文本**：`timeUnixNano` 为 `"0"`、`severityText` 为空，
+  只有 `severityNumber`。类别由 `attributes.step / agent / skill` 推导，时间按所属 span 对齐。
+- **指标 `type` 为 null、`charts` 为 null**：类型从 Prometheus 名称后缀推导；图表由前端从 `series` 生成。
+- **数据点是 `[timestamp, "字符串值"]`**：Prometheus range 形态，值需解析为数字。
+- 目录中的 `*.duration` 对应服务的 histogram 三件套，均值 = `Σsum / Σcount`（按标签对齐）。
+
+#### 测试
+
+```bash
+node src/services/__tests__/obs-adapter.test.mjs        # 单测：对真实响应快照，无需网络
+OBS_API_BASE=https://<host> node src/services/__tests__/obs-e2e.test.mjs   # 端到端：真实服务
+```
+
+#### 浏览器访问的前提（前端无法绕过）
+
+查询服务需满足：**有效的 HTTPS 证书**（不能过期或自签名）、**CORS 放行门户来源**
+（当前服务返回 `Access-Control-Allow-Origin: *`，已满足）。证书无效时浏览器会拒绝连接，
+详情页会给出明确的原因提示。
 
 ## Langfuse 地址
 

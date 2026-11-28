@@ -11,10 +11,25 @@ import { ThirdPartyObservability } from './ui/third-party';
 
 export default function ObservationCenterPlugin() {
     const tasks = useCollabTasks();
+    const usingApi = tasks.source === 'api';
     // view: null = 列表；'raw' = 原始观测信号（Metric/Trace/Log）；'business' = 业务观测
     const [selected, setSelected] = useState(null);
     const [view, setView] = useState(null);
     const backToList = () => { setSelected(null); setView(null); };
+
+    // 选中一个任务：API 模式下按需拉取详情（trace/logs/metrics），模拟模式直接用列表里的 task
+    const openTask = (task, nextView) => {
+        setSelected(task);
+        setView(nextView);
+        if (usingApi) tasks.loadDetail(task.runId);
+    };
+
+    // 详情就绪前先用列表摘要占位，避免空白；就绪后换成完整 task
+    const detailTask = usingApi && tasks.detail.task && tasks.detail.runId === selected?.runId ? tasks.detail.task : selected;
+    const detailLoading = usingApi && selected && tasks.detail.loading && tasks.detail.runId === selected?.runId;
+    const detailError = usingApi && selected && !tasks.detail.loading && tasks.detail.error && tasks.detail.runId === selected?.runId
+        ? tasks.detail.error : null;
+
     return (
         <div className="obs-plugin-root">
             <div className="obs-toolbar">
@@ -25,8 +40,11 @@ export default function ObservationCenterPlugin() {
                     </div>
                 </div>
                 <div className="obs-toolbar-actions">
-                    <span className="obs-source-badge" title="默认为 consumer-smoke 方式构建的模拟数据（SDK 存储形态）；存储栈上线后自动切换真实 API">
-                        模拟数据 · SDK 存储形态
+                    <span
+                        className={`obs-source-badge ${usingApi ? 'obs-source-badge-api' : ''}`}
+                        title={usingApi ? '数据来自 Observability Workflow Query Service（实时查询）' : '内置模拟数据（SDK 存储形态）'}
+                    >
+                        {usingApi ? '查询服务 · 实时' : '模拟数据 · SDK 存储形态'}
                     </span>
                     <button type="button" className="obs-btn" onClick={tasks.reload} title="重新拉取协作任务数据">
                         <IconRefresh />
@@ -36,16 +54,23 @@ export default function ObservationCenterPlugin() {
             </div>
 
             {selected && view === 'business' ? (
-                <BusinessObservationView task={selected} onBack={backToList} />
+                <BusinessObservationView task={detailTask} onBack={backToList} loading={detailLoading} error={detailError} />
             ) : selected ? (
-                <TaskDetailView task={selected} dataset={tasks.dataset} onBack={backToList} />
+                <TaskDetailView
+                    task={detailTask}
+                    dataset={tasks.dataset}
+                    onBack={backToList}
+                    loading={detailLoading}
+                    error={detailError}
+                    charts={tasks.detail.charts}
+                />
             ) : (
                 <TaskListView
                     loading={tasks.loading}
                     error={tasks.error}
                     dataset={tasks.dataset}
-                    onOpen={(task) => { setSelected(task); setView('raw'); }}
-                    onOpenBusiness={(task) => { setSelected(task); setView('business'); }}
+                    onOpen={(task) => openTask(task, 'raw')}
+                    onOpenBusiness={(task) => openTask(task, 'business')}
                     onReload={tasks.reload}
                 />
             )}

@@ -174,12 +174,13 @@ function TokensBlock({ task }) {
  * 业务观测视图：从业务结果（而非原始信号）角度审视一次协作任务。
  * 与 TaskDetailView（原始观测信号）并列，由任务列表的「查看业务观测」进入。
  */
-export function BusinessObservationView({ task, onBack }) {
+export function BusinessObservationView({ task, onBack, loading = false, error = null }) {
     const wf = task.workflow || {};
     const steps = task.steps || [];
     const failedSteps = steps.filter((s) => s.status === 'error').length;
     const tokens = task.tokens || [];
     const tokenTotal = tokens.reduce((a, t) => a + t.tokens, 0);
+    const ready = task && !task._summary;
 
     const kpis = [
         { label: '总耗时', value: fmtMs(task.durationMs) },
@@ -202,6 +203,20 @@ export function BusinessObservationView({ task, onBack }) {
                 <StatusPill status={task.status} />
             </div>
 
+            {loading && (
+                <div className="obs-panel obs-detail-state" role="status">
+                    <span className="obs-panel-note">正在加载该运行的工作流 / Trace / 指标…</span>
+                </div>
+            )}
+            {!loading && error && (
+                <div className="obs-panel obs-detail-state obs-detail-state-error" role="alert">
+                    <div className="obs-panel-title"><span>无法加载该运行的业务观测数据</span></div>
+                    <p className="obs-panel-note">{error}</p>
+                </div>
+            )}
+
+            {!loading && !error && ready && (
+            <>
             <div className="obs-biz-kpis">
                 {kpis.map((k) => (
                     <div key={k.label} className="obs-biz-kpi">
@@ -216,6 +231,8 @@ export function BusinessObservationView({ task, onBack }) {
                 <CollaborationBlock task={task} />
             </div>
             <TokensBlock task={task} />
+            </>
+            )}
         </div>
     );
 }
