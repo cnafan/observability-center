@@ -6,6 +6,7 @@ import { agentStats, fmtMs, fmtValue, shortAttrKey } from '../lib/format';
 import { PromGraph, PromHistogram, PromLegend } from '../ui/charts';
 import { AttrChip } from '../ui/common';
 import { SignalValueList } from '../ui/dict';
+import { metricAvailability, resolveMetricCharts, toHistogram, toLineChart } from '../services/metric-map';
 
 export function MetricContent({ dim, task, charts }) {
     const band = Number.isNaN(Date.parse(task.startedAt))
@@ -133,26 +134,43 @@ export function MetricContent({ dim, task, charts }) {
     );
 }
 
-export function MetricPromTab({ task, dataset }) {
-    const charts = dataset?.charts;
+export function MetricPromTab({ task, dataset, charts = null }) {
+    const usingApi = !!charts;
+    const mockCharts = dataset?.charts;
     const collection = dataset?.collection;
     const allMetrics = METRIC_GROUPS.flatMap((g) => g.metrics);
     const [expr, setExpr] = useState('gen_ai.agent.a2at.task.duration');
     const [view, setView] = useState('graph'); // graph | table
     const [dimFilter, setDimFilter] = useState('all');
     const metric = allMetrics.find((m) => m.name === expr) || allMetrics[0];
-    const line = charts?.lines?.[metric?.name];
-    const hist = charts?.histograms?.[metric?.name];
+
+    // 图表数据：API 模式按目录名映射到查询服务信号；模拟模式直接读预生成的 charts
+    const resolved = usingApi ? resolveMetricCharts(metric?.name, charts) : null;
+    const line = usingApi
+        ? (resolved?.line ? toLineChart(resolved.base, resolved.line, metric?.unit) : null)
+        : mockCharts?.lines?.[metric?.name];
+    const hist = usingApi
+        ? (resolved?.hist ? toHistogram(resolved.base, resolved.hist, metric?.unit) : null)
+        : mockCharts?.histograms?.[metric?.name];
+    const metricMissing = usingApi && resolved?.status === 'missing';
+    const availability = usingApi ? metricAvailability(allMetrics.map((m) => m.name), charts) : null;
+
     const band = Number.isNaN(Date.parse(task.startedAt))
         ? null
         : { from: Date.parse(task.startedAt), to: Date.parse(task.startedAt) + task.durationMs };
-    const sampled = (task.signals || []).filter((s) => s.metric === metric?.name).flatMap((s) => s.samples || []);
     const dimName = { message: 'A2A-T 消息', workflow: '协作工作流', agent: 'Agent' };
     const filtered = allMetrics.filter((m) => dimFilter === 'all' || m.dim === dimFilter);
     const allTaskSamples = (dataset?.tasks || []).flatMap((tk) => (tk.signals || [])
         .filter((s) => s.metric === metric?.name)
         .flatMap((s) => s.samples.map((sm) => ({ runId: tk.runId, value: sm.value, attributes: sm.attributes }))));
-    const rangeLabel = collection ? (collection.windowMin >= 60 ? `${collection.windowMin / 60}h` : `${collection.windowMin}m`) : '2h';
+    // API 模式：当前任务的样本来自 detail task 的 signals（按基名匹配）
+    const apiSamples = usingApi && resolved?.base
+        ? (task.signals || []).filter((s) => s.metric === resolved.base || s.metric.startsWith(resolved.base + '_')).flatMap((s) => s.samples || [])
+        : [];
+    const tableSamples = usingApi
+        ? apiSamples.map((sm) => ({ runId: task.runId, value: sm.value, attributes: sm.attributes }))
+        : allTaskSamples;
+    const rangeLabel = collection ? (collection.windowMin >= 60 ? `${collection.windowMin / 60}h` : `${collection.windowMin}m`) : '5m';
 
     return (
         <>
@@ -169,15 +187,17 @@ export function MetricPromTab({ task, dataset }) {
                         {DIM_TABS.map((t) => (
                             <optgroup key={t.key} label={t.label}>
                                 {allMetrics.filter((m) => m.dim === t.key).map((m) => (
-                                    <option key={m.name} value={m.name}>{m.name}</option>
+                                    <option key={m.name} value={m.name}>
+                                        {m.name}{availability && availability[m.name] !== 'ok' ? '（查询服务未提供）' : ''}
+                                    </option>
                                 ))}
                             </optgroup>
                         ))}
                     </select>
                     <div className="obs-prom-meta">
-                        <AttrChip k="采集周期" v={`${collection?.intervalSec}s`} />
+                        <AttrChip k="采集周期" v={collection?.intervalSec ? `${collection.intervalSec}s` : '15s'} />
                         <AttrChip k="范围" v={rangeLabel} />
-                        <span className="obs-panel-note">{collection?.storage || 'Prometheus / Thanos'}</span>
+                        <span className="obs-panel-note">{usingApi ? 'Observability Query Service · OTLP histogram' : (collection?.storage || 'Prometheus / Thanos')}</span>
                     </div>
                 </div>
             </div>
@@ -202,6 +222,14 @@ export function MetricPromTab({ task, dataset }) {
                     </div>
                 </div>
                 {metric?.desc && <div className="obs-prom-desc">含义：{metric.desc}</div>}
+                {view === 'graph' && metricMissing && (
+                    <div className="obs-sig-none obs-prom-missing">
+                        查询服务未返回该指标的数据{resolved?.reason ? `（${resolved.reason}）` : ''}。该指标可能在此运行中未被触发，或服务端尚未导出。
+                    </div>
+                )}
+                {view === 'graph' && !metricMissing && !line && !hist && (
+                    <div className="obs-sig-none obs-prom-missing">此运行在该时间窗口内没有该信号的采样点。</div>
+                )}
                 {view === 'graph' && line && (
                     <>
                         <div className="obs-prom-charts-grid">
@@ -223,7 +251,7 @@ export function MetricPromTab({ task, dataset }) {
                     <table className="obs-ops-table obs-prom-table">
                         <thead><tr><th>任务</th><th>维度属性</th><th>值</th></tr></thead>
                         <tbody>
-                            {allTaskSamples.map((r, i) => (
+                            {tableSamples.map((r, i) => (
                                 <tr key={i}>
                                     <td className="obs-prom-mono">{r.runId}</td>
                                     <td>
@@ -236,7 +264,7 @@ export function MetricPromTab({ task, dataset }) {
                                     <td><span className="obs-sig-val">{fmtValue(metric?.unit, r.value)}</span></td>
                                 </tr>
                             ))}
-                            {!allTaskSamples.length && (
+                            {!tableSamples.length && (
                                 <tr><td colSpan="3" className="obs-sig-none">—（本任务未触发该信号）</td></tr>
                             )}
                         </tbody>
@@ -265,7 +293,10 @@ export function MetricPromTab({ task, dataset }) {
                     <thead><tr><th>维度</th><th>指标</th><th>类型</th><th>单位</th><th>当前值（本任务）</th></tr></thead>
                     <tbody>
                         {filtered.map((m) => {
-                            const vals = (task.signals || []).filter((s) => s.metric === m.name).flatMap((s) => s.samples || []);
+                            const base = usingApi ? resolveMetricCharts(m.name, charts).base : null;
+                            const vals = (task.signals || [])
+                                .filter((s) => (usingApi ? (base && (s.metric === base || s.metric.startsWith(base + '_'))) : s.metric === m.name))
+                                .flatMap((s) => s.samples || []);
                             const isSel = m.name === metric?.name;
                             return (
                                 <tr

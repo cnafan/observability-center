@@ -21,10 +21,11 @@ export function DimensionBlock({ label, note, children }) {
     );
 }
 
-export function TaskDetailView({ task, dataset, onBack }) {
+export function TaskDetailView({ task, dataset, onBack, loading = false, error = null, charts = null }) {
     const [signal, setSignal] = useState('metric'); // 顶层：metric | trace | log
     const [topoOpen, setTopoOpen] = useState(false); // 默认折叠为左侧窄条
     const collection = dataset?.collection;
+    const ready = task && !task._summary;
     return (
         <div className="obs-body">
             <div className="obs-detail-head">
@@ -38,6 +39,20 @@ export function TaskDetailView({ task, dataset, onBack }) {
                 <StatusPill status={task.status} />
             </div>
 
+            {loading && (
+                <div className="obs-panel obs-detail-state" role="status">
+                    <span className="obs-panel-note">正在加载该运行的 Trace / Log / Metric…</span>
+                </div>
+            )}
+            {!loading && error && (
+                <div className="obs-panel obs-detail-state obs-detail-state-error" role="alert">
+                    <div className="obs-panel-title"><span>无法加载该运行的观测数据</span></div>
+                    <p className="obs-panel-note">{error}</p>
+                    <DetailErrorHint message={error} />
+                </div>
+            )}
+
+            {!loading && !error && ready && (
             <div className={`obs-detail-layout ${topoOpen ? '' : 'obs-detail-layout-collapsed'}`}>
                 {topoOpen ? (
                     <div className="obs-topo">
@@ -88,7 +103,7 @@ export function TaskDetailView({ task, dataset, onBack }) {
                             <span className="obs-panel-note">{collection.note}</span>
                         </div>
                     )}
-                    {signal === 'metric' && <MetricPromTab task={task} dataset={dataset} />}
+                    {signal === 'metric' && <MetricPromTab task={task} dataset={dataset} charts={charts} />}
                     {signal === 'trace' && (
                         <DimensionBlock label="协作任务 Trace" note="同一 Trace 贯穿消息 / 工作流 / Agent 三个维度">
                             <TraceContent task={task} />
@@ -98,6 +113,31 @@ export function TaskDetailView({ task, dataset, onBack }) {
                     {signal === 'dict' && <DictContent />}
                 </div>
             </div>
+            )}
         </div>
+    );
+}
+
+/**
+ * 把浏览器的网络错误翻译成可操作的原因。
+ * "Failed to fetch" 在浏览器里几乎总是 CORS 或证书问题，而这两者前端都无法自行修复。
+ */
+function DetailErrorHint({ message }) {
+    const m = String(message || '');
+    const hints = [];
+    if (/failed to fetch|networkerror|load failed/i.test(m)) {
+        hints.push('浏览器未能建立连接。最常见的原因：');
+        hints.push('· 查询服务的 HTTPS 证书无效或已过期（浏览器强制校验，前端无法绕过）——请检查服务端证书');
+        hints.push('· 跨域（CORS）未放行当前门户来源');
+        hints.push('· 查询服务不可达或地址配置错误');
+    }
+    if (/aborted|超时/i.test(m)) hints.push('请求超时：查询服务响应过慢，或该运行的数据量过大。');
+    if (/HTTP 404/i.test(m)) hints.push('该 runId 在查询服务中不存在（可能已被清理）。');
+    if (/HTTP 5\d\d/i.test(m)) hints.push('查询服务或其前置网关异常，请稍后重试或联系服务维护者。');
+    if (!hints.length) return null;
+    return (
+        <ul className="obs-detail-hint">
+            {hints.map((h, i) => <li key={i}>{h}</li>)}
+        </ul>
     );
 }
