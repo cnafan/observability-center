@@ -89,17 +89,20 @@ function Get-TraceSpans {
 }
 
 function Get-TraceVerification {
-    param([object]$TraceResponse)
+    param(
+        [object]$TraceResponse,
+        [string]$Case
+    )
     $spans = @(Get-TraceSpans $TraceResponse)
     $traceIds = @($spans | ForEach-Object { $_.traceId } | Sort-Object -Unique)
-    $spanIds = @{}
+    $spanById = @{}
     foreach ($span in $spans) {
         if (-not [string]::IsNullOrWhiteSpace($span.spanId)) {
-            $spanIds[$span.spanId] = $true
+            $spanById[$span.spanId] = $span
         }
     }
     $parentFailures = @($spans | Where-Object {
-            -not [string]::IsNullOrWhiteSpace($_.parentSpanId) -and -not $spanIds.ContainsKey($_.parentSpanId)
+            -not [string]::IsNullOrWhiteSpace($_.parentSpanId) -and -not $spanById.ContainsKey($_.parentSpanId)
         } | ForEach-Object {
             [ordered]@{
                 spanId = $_.spanId
@@ -110,14 +113,81 @@ function Get-TraceVerification {
     $workflowSpans = @($spans | Where-Object { $_.name -eq 'a2at.workflow' })
     $rootWorkflowSpans = @($workflowSpans | Where-Object { [string]::IsNullOrWhiteSpace($_.parentSpanId) })
     $stepSpans = @($spans | Where-Object { $_.name -like 'a2at.step.*' })
+    $substepSpans = @($spans | Where-Object { $_.name -like 'a2at.substep.*' })
     $sendMessageSpans = @($spans | Where-Object { $_.name -eq 'SendMessage' })
-    $rootIds = @($rootWorkflowSpans | ForEach-Object { $_.spanId })
-    $rootToSendMessage = @($sendMessageSpans | Where-Object { $rootIds -contains $_.parentSpanId })
+    $waimoWorkflowRoots = @($rootWorkflowSpans | Where-Object { $_.serviceName -eq 'complaint-waimo' })
+    $waimoSteps = @($stepSpans | Where-Object { $_.serviceName -eq 'complaint-waimo' })
+    $waimoStepParentOk = $waimoWorkflowRoots.Count -eq 1 -and $waimoSteps.Count -gt 0
+    if ($waimoStepParentOk) {
+        $waimoRootId = [string]$waimoWorkflowRoots[0].spanId
+        $waimoStepParentOk = @($waimoSteps | Where-Object { $_.parentSpanId -ne $waimoRootId }).Count -eq 0
+    }
+
+    $substepParentFailures = @(
+        foreach ($substep in $substepSpans) {
+            $parent = $spanById[[string]$substep.parentSpanId]
+            if ($null -eq $parent -or $parent.name -notlike 'a2at.step.*' -or $parent.serviceName -ne $substep.serviceName) {
+                [ordered]@{
+                    spanId = $substep.spanId
+                    name = $substep.name
+                    serviceName = $substep.serviceName
+                    parentSpanId = $substep.parentSpanId
+                    parentName = if ($null -eq $parent) { $null } else { $parent.name }
+                }
+            }
+        }
+    )
+    $substepsParentedToStep = $substepSpans.Count -gt 0 -and $substepParentFailures.Count -eq 0
+
+    $requiredWaimoSubsteps = @(
+        [pscustomobject]@{ name = 'a2at.substep.complaint-ticket-intake'; parent = 'a2at.step.投诉受理' },
+        [pscustomobject]@{ name = 'a2at.substep.complaint-intent-recognition'; parent = 'a2at.step.投诉识别' },
+        [pscustomobject]@{ name = 'a2at.substep.complaint-localization'; parent = 'a2at.step.定界定位' },
+        [pscustomobject]@{ name = 'a2at.substep.agent-card-search'; parent = 'a2at.step.检索传输智能体' }
+    )
+    if ($Case -eq 'success') {
+        $requiredWaimoSubsteps += [pscustomobject]@{ name = 'a2at.substep.complaint-closure'; parent = 'a2at.step.投诉报结' }
+    }
+    $waimoSubstepFailures = @(
+        foreach ($expected in $requiredWaimoSubsteps) {
+            $matches = @($substepSpans | Where-Object {
+                    $_.serviceName -eq 'complaint-waimo' -and $_.name -eq $expected.name
+                })
+            $parentName = if ($matches.Count -eq 1) {
+                $parent = $spanById[[string]$matches[0].parentSpanId]
+                if ($null -eq $parent) { $null } else { [string]$parent.name }
+            } else {
+                $null
+            }
+            if ($matches.Count -ne 1 -or $parentName -ne $expected.parent) {
+                [ordered]@{
+                    name = $expected.name
+                    expectedParent = $expected.parent
+                    actualParent = $parentName
+                    matchCount = $matches.Count
+                }
+            }
+        }
+    )
+    $requiredWaimoSubstepsParented = $waimoSubstepFailures.Count -eq 0
+
+    $waimoDiagnosticSteps = @($waimoSteps | Where-Object { $_.name -eq 'a2at.step.投诉诊断处置' })
+    $waimoClientSendMessages = @($sendMessageSpans | Where-Object {
+            $_.serviceName -eq 'complaint-waimo' -and $_.kind -eq 3
+        })
+    $waimoDiagnosticSendMessages = @(
+        foreach ($step in $waimoDiagnosticSteps) {
+            $waimoClientSendMessages | Where-Object { $_.parentSpanId -eq $step.spanId }
+        }
+    )
+    $waimoSendMessageLinkedToDiagnosticStep = $waimoDiagnosticSteps.Count -eq 1 `
+        -and $waimoDiagnosticSendMessages.Count -eq 1
+
     $transportWorkflows = @($workflowSpans | Where-Object { $_.serviceName -eq 'complaint-transport' })
     $transportWorkflowParents = @(
         foreach ($workflowSpan in $transportWorkflows) {
-            if ($spanIds.ContainsKey($workflowSpan.parentSpanId)) {
-                $spans | Where-Object { $_.spanId -eq $workflowSpan.parentSpanId } | Select-Object -First 1
+            if ($spanById.ContainsKey($workflowSpan.parentSpanId)) {
+                $spanById[$workflowSpan.parentSpanId]
             }
         }
     )
@@ -143,6 +213,12 @@ function Get-TraceVerification {
     $transportInbound = @($sendMessageSpans | Where-Object {
             $_.serviceName -eq 'complaint-transport' -and $_.kind -eq 2
         })
+    $waimoClientSpanIds = @($waimoDiagnosticSendMessages | ForEach-Object { $_.spanId })
+    $transportInboundFromWaimo = @($transportInbound | Where-Object {
+            $waimoClientSpanIds -contains $_.parentSpanId
+        })
+    $transportInboundLinkedToWaimoSendMessage = $transportInbound.Count -gt 0 `
+        -and $transportInboundFromWaimo.Count -eq $transportInbound.Count
     $transportInboundWithCompleteAttributes = @(
         foreach ($inboundSpan in $transportInbound) {
             $missingAttributes = @($requiredInboundAttributes | Where-Object {
@@ -158,9 +234,13 @@ function Get-TraceVerification {
         -and $workflowSpans.Count -gt 0 `
         -and $rootWorkflowSpans.Count -gt 0 `
         -and $stepSpans.Count -gt 0 `
+        -and $waimoStepParentOk `
+        -and $substepsParentedToStep `
+        -and $requiredWaimoSubstepsParented `
         -and $sendMessageSpans.Count -gt 0 `
         -and $parentFailures.Count -eq 0 `
-        -and $rootToSendMessage.Count -gt 0 `
+        -and $waimoSendMessageLinkedToDiagnosticStep `
+        -and $transportInboundLinkedToWaimoSendMessage `
         -and $transportWorkflowLinked `
         -and $transportInboundAttributesComplete
     return [pscustomobject]@{
@@ -170,14 +250,22 @@ function Get-TraceVerification {
         workflowSpanCount = $workflowSpans.Count
         rootWorkflowSpanCount = $rootWorkflowSpans.Count
         stepSpanCount = $stepSpans.Count
+        substepSpanCount = $substepSpans.Count
         sendMessageSpanCount = $sendMessageSpans.Count
         parentClosureOk = $parentFailures.Count -eq 0
         parentClosureFailures = $parentFailures
-        rootWorkflowSpanIds = $rootIds
-        rootToSendMessageCount = $rootToSendMessage.Count
+        waimoWorkflowRootCount = $waimoWorkflowRoots.Count
+        waimoStepParentOk = $waimoStepParentOk
+        substepsParentedToStep = $substepsParentedToStep
+        substepParentFailures = $substepParentFailures
+        requiredWaimoSubstepsParented = $requiredWaimoSubstepsParented
+        waimoSubstepFailures = $waimoSubstepFailures
+        waimoDiagnosticSendMessageCount = $waimoDiagnosticSendMessages.Count
+        waimoSendMessageLinkedToDiagnosticStep = $waimoSendMessageLinkedToDiagnosticStep
         transportWorkflowCount = $transportWorkflows.Count
         transportWorkflowLinked = $transportWorkflowLinked
         transportInboundSpanCount = $transportInbound.Count
+        transportInboundLinkedToWaimoSendMessage = $transportInboundLinkedToWaimoSendMessage
         transportInboundAttributesComplete = $transportInboundAttributesComplete
         requiredTransportInboundAttributes = $requiredInboundAttributes
         spans = $spans
@@ -275,7 +363,7 @@ try {
             $rawResults.trace.detailsUri = $traceDetailsUri
             $traceDetailsResult = Wait-ForStorageResult -TimeoutSeconds $QueryTimeoutSeconds -QueryAction {
                 $traceDetails = Invoke-RestMethod -Uri $traceDetailsUri -Method Get
-                $verification = Get-TraceVerification $traceDetails
+                $verification = Get-TraceVerification $traceDetails $Case
                 [pscustomobject]@{
                     response = $traceDetails
                     verification = $verification

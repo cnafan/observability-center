@@ -61,26 +61,82 @@ cleanup
 python3 - "$artifact_root" "$case_name" "$run_id" <<'PY'
 import json, pathlib, sys
 root, case, run = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-report=json.load(open(root/(run+'.json'))); failures=[]; roles=[]
-if report.get('transportMode') != 'multi-http': failures.append('expected multi-http')
-if report.get('workflowId') != '1d4c367d-9f0c-4400-85d2-caaf21ee37af-waimo': failures.append('workflowId mismatch')
-for name in ('west','east','transport','waimo'):
- path=root/f'{run}.{name}.json'
- if not path.exists(): failures.append(f'missing role report: {name}'); continue
- value=json.load(open(path)); roles.append(value)
- if value.get('role') != name or not value.get('roleUrl'): failures.append(f'invalid role report: {name}')
-records=[x for r in roles for x in r.get('agentRecords',[])]; transport=[x for r in roles if r.get('role')=='transport' for x in r.get('agentRecords',[])]; steps=[x.get('step') for x in report.get('history',[])]
+report = json.loads((root / f'{run}.json').read_text(encoding='utf-8'))
+failures = []
+roles = {}
+
+if report.get('transportMode') != 'multi-http':
+    failures.append('expected multi-http')
+if report.get('workflowId') != '1d4c367d-9f0c-4400-85d2-caaf21ee37af-waimo':
+    failures.append('workflowId mismatch')
+
+for name in ('west', 'east', 'transport', 'waimo'):
+    path = root / f'{run}.{name}.json'
+    if not path.exists():
+        failures.append(f'missing role report: {name}')
+        continue
+    value = json.loads(path.read_text(encoding='utf-8'))
+    roles[name] = value
+    if value.get('role') != name or not value.get('roleUrl'):
+        failures.append(f'invalid role report: {name}')
+
+records = [record for role in roles.values() for record in role.get('agentRecords', [])]
+transport = roles.get('transport', {}).get('agentRecords', [])
+west = roles.get('west', {}).get('agentRecords', [])
+east = roles.get('east', {}).get('agentRecords', [])
+history = report.get('history', [])
+steps = [item.get('step') for item in history]
+
 if case == 'success':
- if not report.get('success') or len(steps)!=6 or '投诉报结' not in steps: failures.append('success workflow did not complete six WAIMO steps')
- for op in ('diagnosis-east','diagnosis-west','authorization','restoration'):
-  if sum(x.get('kind')=='nested-task-http' and x.get('operation')==op and x.get('status')=='completed' for x in transport)!=1: failures.append(f'missing completed {op}')
- diag=[x for x in transport if x.get('operation') in ('diagnosis-east','diagnosis-west') and x.get('status')=='completed']
- if len(diag)!=2 or max(x['startedNanos'] for x in diag)>=min(x['finishedNanos'] for x in diag): failures.append('regional diagnosis did not overlap')
+    if not report.get('success') or len(steps) != 6 or '投诉报结' not in steps:
+        failures.append('success workflow did not complete six WAIMO steps')
+    for step in ('投诉受理', '投诉识别', '定界定位', '检索传输智能体', '投诉报结'):
+        if sum(item.get('step') == step and item.get('agent') == 'WAIMO Complaint Agent'
+               and item.get('status') == 'success' for item in history) != 1:
+            failures.append(f'WAIMO local PSOP substep did not complete: {step}')
+    if transport:
+        failures.append('Transport-owned PSOP subtasks were sent through A2A instead of running locally')
+
+    west_diagnosis = [item for item in west if item.get('step') == '双侧根因定位'
+                      and item.get('status') == 'completed']
+    east_diagnosis = [item for item in east if item.get('step') == '双侧根因定位'
+                      and item.get('status') == 'completed']
+    if len(west_diagnosis) != 1:
+        failures.append('West OMC diagnosis record is missing')
+    if len(east_diagnosis) != 1:
+        failures.append('East OMC diagnosis record is missing')
+    for step in ('授权校验', '动网操作授权', '抢通执行'):
+        if sum(item.get('step') == step and item.get('status') == 'completed'
+               for item in west) != 1:
+            failures.append(f'Selected OMC step did not complete: {step}')
+    if len(west_diagnosis) == 1 and len(east_diagnosis) == 1:
+        diagnosis = west_diagnosis + east_diagnosis
+        if max(int(item['startedNanos']) for item in diagnosis) >= min(
+                int(item['finishedNanos']) for item in diagnosis):
+            failures.append('regional diagnosis did not overlap')
 else:
- if report.get('success') or len(steps)!=5 or '投诉诊断处置' not in steps or '投诉报结' in steps or '人工修复' in steps: failures.append('authorization-denied workflow state invalid')
- if sum(x.get('errorCode')=='authorization.denied' for x in report.get('history',[]))!=1: failures.append('authorization denial missing')
- if sum(x.get('operation')=='authorization' and x.get('status')=='failed' for x in transport)!=1: failures.append('authorization failure record missing')
- if any(x.get('operation')=='restoration' for x in transport): failures.append('restoration ran after denial')
-print(json.dumps({'runId':run,'case':case,'success':bool(report.get('success')),'historyCount':len(steps),'roleCount':len(roles),'recordCount':len(records),'failureCount':len(failures),'report':str(root/(run+'.json'))},ensure_ascii=False))
-if failures: print('\n'.join(failures),file=sys.stderr); sys.exit(1)
+    if report.get('success') or len(steps) != 5 or '投诉诊断处置' not in steps \
+            or '投诉报结' in steps or '人工修复' in steps:
+        failures.append('authorization-denied workflow state invalid')
+    denied = [item for item in west if item.get('step') == '动网操作授权'
+              and item.get('status') == 'failed'
+              and item.get('errorCode') == 'authorization.denied']
+    if len(denied) != 1:
+        failures.append('Selected OMC authorization denial record is missing')
+    if transport:
+        failures.append('Transport-owned PSOP subtasks were sent through A2A after authorization denial')
+
+print(json.dumps({
+    'runId': run,
+    'case': case,
+    'success': bool(report.get('success')),
+    'historyCount': len(steps),
+    'roleCount': len(roles),
+    'recordCount': len(records),
+    'failureCount': len(failures),
+    'report': str(root / f'{run}.json'),
+}, ensure_ascii=False))
+if failures:
+    print('\n'.join(failures), file=sys.stderr)
+    sys.exit(1)
 PY
