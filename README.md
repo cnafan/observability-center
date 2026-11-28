@@ -89,15 +89,48 @@ Langfuse 内嵌视图已按需求移除；Langfuse 仍可从「三方可观测�
 ```json
 {
   "obsApi": {
-    "baseUrl": "https://<query-service-host>",
+    "baseUrl": "",
     "timeoutMs": 20000,
     "limit": 50
   }
 }
 ```
 
-文件不存在（404）表示该环境未接入查询服务，插件回退到内置模拟数据。
-换环境只需替换这个文件，**代码与构建产物都不用变**。
+`baseUrl` 的三种取值：
+
+| 取值 | 含义 |
+|---|---|
+| `""`（空字符串） | **同源**——请求发往门户自身的 `/api/observability/` 与 `/api/v1/observability/`，由门户 nginx 反代到查询服务。**推荐**：浏览器只与门户通信，不受查询服务证书 / 跨域影响 |
+| `"https://<host>"` | 直连查询服务。要求服务端证书有效且 CORS 放行门户来源 |
+| 省略 / 纯空白 | 未接入，回退到内置模拟数据 |
+
+文件不存在（404）也表示未接入。换环境只需替换这个文件，**代码与构建产物都不用变**。
+
+**同源反代所需的 nginx 配置**（门户侧，`/etc/nginx/conf.d/openan-portal.conf`；上游地址只写在这里）：
+
+```nginx
+location /api/observability/ {
+    proxy_pass https://<query-service-host>/api/observability/;
+    proxy_ssl_server_name on;
+    proxy_http_version 1.1;
+    proxy_set_header Host <query-service-host>;
+    proxy_set_header Connection "";
+    proxy_buffering off;
+    proxy_read_timeout 120s;
+}
+location /api/v1/observability/ {
+    proxy_pass https://<query-service-host>/api/v1/observability/;
+    proxy_ssl_server_name on;
+    proxy_http_version 1.1;
+    proxy_set_header Host <query-service-host>;
+    proxy_set_header Connection "";
+    proxy_buffering off;
+    proxy_read_timeout 120s;
+}
+```
+
+nginx 作为客户端不校验上游证书（`proxy_ssl_verify` 默认 `off`），并在同源上终结 CORS。
+查询服务证书过期时，这是**唯一不需要服务端介入**的通路——浏览器对无效证书的拒绝无法从前端绕过。
 
 ```js
 // 2) URL 查询参数（优先级最高，用于临时切换、联调）
@@ -156,11 +189,14 @@ node src/services/__tests__/obs-adapter.test.mjs        # 单测：对真实响�
 OBS_API_BASE=https://<host> node src/services/__tests__/obs-e2e.test.mjs   # 端到端：真实服务
 ```
 
-#### 浏览器访问的前提（前端无法绕过）
+#### 浏览器访问的前提
 
-查询服务需满足：**有效的 HTTPS 证书**（不能过期或自签名）、**CORS 放行门户来源**
-（当前服务返回 `Access-Control-Allow-Origin: *`，已满足）。证书无效时浏览器会拒绝连接，
-详情页会给出明确的原因提示。
+| 模式 | 前提 |
+|---|---|
+| 同源反代（`baseUrl: ""`，推荐） | 门户 nginx 配好上述 location。浏览器只与门户通信，**不受查询服务证书 / 跨域影响** |
+| 直连（`baseUrl: "https://<host>"`） | 查询服务需有**有效的 HTTPS 证书**（不能过期或自签名）且 **CORS 放行门户来源**。前端无法绕过浏览器的证书校验 |
+
+连接失败时详情页会给出明确的原因提示。
 
 ## Langfuse 地址
 

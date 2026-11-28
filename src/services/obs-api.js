@@ -21,7 +21,10 @@ export function joinUrl(baseUrl, path) {
 }
 
 async function request(baseUrl, path, { method = 'GET', body, timeoutMs = 20000, fetchImpl, signal } = {}) {
-    if (!baseUrl) throw new ApiError('查询服务地址未配置（baseUrl 为空）', { path });
+    // baseUrl 允许为空字符串 = 与门户同源（走门户 nginx 反代）；只有 null/undefined/非字符串才算未配置。
+    if (baseUrl === null || baseUrl === undefined || typeof baseUrl !== 'string') {
+        throw new ApiError('查询服务地址未配置（baseUrl 不是字符串）', { path });
+    }
     const doFetch = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
     if (!doFetch) throw new ApiError('当前环境没有 fetch', { path });
 
@@ -82,7 +85,8 @@ export function attrsToObject(attrs) {
     return out;
 }
 
-export function createObsClient({ baseUrl, timeoutMs = 20000, fetchImpl } = {}) {
+export function createObsClient({ baseUrl = '', timeoutMs = 20000, fetchImpl } = {}) {
+    // baseUrl: '' = 与门户同源（经门户 nginx 反代）；'https://host' = 直连查询服务
     return {
         baseUrl,
         health: (opts = {}) => request(baseUrl, '/api/observability/healthz', { timeoutMs, fetchImpl, ...opts }),
