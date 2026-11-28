@@ -59,7 +59,7 @@ import json, pathlib, sys
 root, case, run = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 report=json.load(open(root/(run+'.json'))); failures=[]; roles=[]
 if report.get('transportMode') != 'multi-http': failures.append('expected multi-http')
-if report.get('workflowId') != '1d4c367d-9f0c-4400-85d2-caaf21ee37af': failures.append('workflowId mismatch')
+if report.get('workflowId') != '1d4c367d-9f0c-4400-85d2-caaf21ee37af-waimo': failures.append('workflowId mismatch')
 for name in ('west','east','transport','waimo'):
  path=root/f'{run}.{name}.json'
  if not path.exists(): failures.append(f'missing role report: {name}'); continue
