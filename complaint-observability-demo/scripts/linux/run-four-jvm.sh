@@ -54,12 +54,16 @@ for entry in "${roles[@]}"; do
 done
 for _ in $(seq 1 $((timeout_seconds * 2))); do [[ -f "$artifact_root/$run_id.json" ]] && break; sleep .5; done
 [[ -f "$artifact_root/$run_id.json" ]] || { echo "Workflow report timed out: $run_id" >&2; exit 1; }
+# Each role writes its report as part of its orderly shutdown.  Stop and join
+# all role processes before reading those reports so a completed workflow is
+# not reported as a false validation failure.
+cleanup
 python3 - "$artifact_root" "$case_name" "$run_id" <<'PY'
 import json, pathlib, sys
 root, case, run = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 report=json.load(open(root/(run+'.json'))); failures=[]; roles=[]
 if report.get('transportMode') != 'multi-http': failures.append('expected multi-http')
-if report.get('workflowId') != '1d4c367d-9f0c-4400-85d2-caaf21ee37af': failures.append('workflowId mismatch')
+if report.get('workflowId') != '1d4c367d-9f0c-4400-85d2-caaf21ee37af-waimo': failures.append('workflowId mismatch')
 for name in ('west','east','transport','waimo'):
  path=root/f'{run}.{name}.json'
  if not path.exists(): failures.append(f'missing role report: {name}'); continue
@@ -67,13 +71,13 @@ for name in ('west','east','transport','waimo'):
  if value.get('role') != name or not value.get('roleUrl'): failures.append(f'invalid role report: {name}')
 records=[x for r in roles for x in r.get('agentRecords',[])]; transport=[x for r in roles if r.get('role')=='transport' for x in r.get('agentRecords',[])]; steps=[x.get('step') for x in report.get('history',[])]
 if case == 'success':
- if not report.get('success') or len(steps)!=7 or 'step7' not in steps: failures.append('success workflow did not complete seven steps')
+ if not report.get('success') or len(steps)!=6 or '投诉报结' not in steps: failures.append('success workflow did not complete six WAIMO steps')
  for op in ('diagnosis-east','diagnosis-west','authorization','restoration'):
   if sum(x.get('kind')=='nested-task-http' and x.get('operation')==op and x.get('status')=='completed' for x in transport)!=1: failures.append(f'missing completed {op}')
  diag=[x for x in transport if x.get('operation') in ('diagnosis-east','diagnosis-west') and x.get('status')=='completed']
  if len(diag)!=2 or max(x['startedNanos'] for x in diag)>=min(x['finishedNanos'] for x in diag): failures.append('regional diagnosis did not overlap')
 else:
- if report.get('success') or len(steps)!=5 or 'step5' not in steps or 'step6' in steps or 'step7' in steps: failures.append('authorization-denied workflow state invalid')
+ if report.get('success') or len(steps)!=5 or '投诉诊断处置' not in steps or '投诉报结' in steps or '人工修复' in steps: failures.append('authorization-denied workflow state invalid')
  if sum(x.get('errorCode')=='authorization.denied' for x in report.get('history',[]))!=1: failures.append('authorization denial missing')
  if sum(x.get('operation')=='authorization' and x.get('status')=='failed' for x in transport)!=1: failures.append('authorization failure record missing')
  if any(x.get('operation')=='restoration' for x in transport): failures.append('restoration ran after denial')
