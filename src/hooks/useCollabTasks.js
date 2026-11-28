@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getObsConfig, isObsApiConfigured } from '../lib/config';
+import { getObsConfig, isObsApiConfigured, loadRuntimeConfig } from '../lib/config';
 import { createObsClient } from '../services/obs-api';
 import { buildCharts, buildListMeta, buildListTask, buildTask } from '../services/obs-adapter';
 
@@ -9,10 +9,13 @@ import { buildCharts, buildListMeta, buildListTask, buildTask } from '../service
  * 已配置查询服务（见 lib/config.js）时走真实接口：列表用 listWorkflows，
  * 选中某个 run 后再并行拉 detail / trace / logs / metrics 四个接口组装成 task。
  * 未配置时回退到内置模拟数据（静态 JSON），行为与之前一致。
+ *
+ * 是否"已配置"取决于部署期配置文件 runtime-config.json（异步加载），
+ * 所以首次 reload 会先等配置加载完成，再决定走哪条路径。
  */
 export function useCollabTasks() {
-    const usingApi = isObsApiConfigured();
-    const [state, setState] = useState({ loading: true, error: null, dataset: null, source: usingApi ? 'api' : 'mock' });
+    // 先按"未配置"渲染，等配置文件加载完再定数据源——避免把本该走 API 的环境闪一下 mock 数据
+    const [state, setState] = useState({ loading: true, error: null, dataset: null, source: null });
     const [detail, setDetail] = useState({ loading: false, error: null, task: null, runId: null });
     const seq = useRef(0);
 
@@ -20,6 +23,8 @@ export function useCollabTasks() {
         const my = ++seq.current;
         setState((s) => ({ ...s, loading: true, error: null }));
         try {
+            await loadRuntimeConfig();                 // 404 = 未接入，内部已静默处理
+            if (my !== seq.current) return;
             if (!isObsApiConfigured()) {
                 const { resolveDataUrl } = await import('../lib/urls');
                 const r = await fetch(resolveDataUrl(), { cache: 'no-store' });

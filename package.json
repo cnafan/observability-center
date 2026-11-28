@@ -1,7 +1,7 @@
 {
   "name": "openan-plugin-observation-center",
   "private": true,
-  "version": "1.22.0",
+  "version": "1.22.1",
   "type": "module",
   "description": "OpenAN Portal 观测中心插件 — 指标观测（内嵌 Langfuse Website）",
   "scripts": {

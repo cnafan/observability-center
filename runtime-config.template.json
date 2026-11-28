@@ -1,0 +1,8 @@
+﻿{
+  "_comment": "Observation Center 部署期配置模板。复制为 runtime-config.json 并随插件一起部署（不参与构建、不提交含地址的版本）。删除 obsApi 或留空 baseUrl = 使用内置模拟数据。",
+  "obsApi": {
+    "baseUrl": "",
+    "timeoutMs": 20000,
+    "limit": 50
+  }
+}

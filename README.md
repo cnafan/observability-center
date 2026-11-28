@@ -81,21 +81,39 @@ Langfuse 内嵌视图已按需求移除；Langfuse 仍可从「三方可观测�
 
 #### 配置方式（优先级从高到低）
 
+**1. 部署期配置文件（推荐，换环境的标准方式）**
+
+`plugins/observation-center/runtime-config.json` 随插件产物一起部署，但**不打进 bundle、不提交到仓库**
+（已加入 `.gitignore`，模板见 `runtime-config.template.json`）：
+
+```json
+{
+  "obsApi": {
+    "baseUrl": "https://<query-service-host>",
+    "timeoutMs": 20000,
+    "limit": 50
+  }
+}
+```
+
+文件不存在（404）表示该环境未接入查询服务，插件回退到内置模拟数据。
+换环境只需替换这个文件，**代码与构建产物都不用变**。
+
 ```js
-// 1) URL 查询参数（临时切换、联调最方便）
+// 2) URL 查询参数（优先级最高，用于临时切换、联调）
 //    /observation?obsApi=https://<query-service-host>&obsInsecure=1
 
-// 2) 全局变量（门户侧注入，推荐用于正式环境）
+// 3) 全局变量（门户侧注入，可覆盖配置文件）
 window.__OPENAN_OBS_API__ = {
   baseUrl: 'https://<query-service-host>',   // 不含路径；插件自动拼接 /api/v1/observability/...
   timeoutMs: 20000,                          // 可选
   limit: 50,                                 // 可选，列表条数 1–100
 };
 
-// 3) 兼容旧配置：__OPENAN_OBS_DATA_URL__ 若不是 .json 地址，也当作查询服务 baseUrl
+// 4) 兼容旧配置：__OPENAN_OBS_DATA_URL__ 若不是 .json 地址，也当作查询服务 baseUrl
 ```
 
-部署到新环境只需改上述配置，**无需重新构建插件**。
+数据源在配置文件加载完成后才确定（加载期间顶部徽标显示「正在连接数据源…」）。
 
 #### 使用的接口
 
