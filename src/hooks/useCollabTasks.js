@@ -36,6 +36,8 @@ export function useCollabTasks() {
             }
             const cfg = getObsConfig();
             const client = createObsClient(cfg);
+            // 先标记数据源：即使请求失败，UI 也能如实显示「查询服务 · 连接失败」，而不是误报成模拟数据
+            setState((s) => ({ ...s, source: 'api' }));
             const list = await client.listWorkflows({ limit: cfg.listLimit });
             if (my !== seq.current) return;
             const meta = buildListMeta(list);

@@ -45,10 +45,14 @@ export default function ObservationCenterPlugin() {
                 </div>
                 <div className="obs-toolbar-actions">
                     <span
-                        className={`obs-source-badge ${usingApi ? 'obs-source-badge-api' : ''}`}
-                        title={usingApi ? '数据来自 Observability Workflow Query Service（实时查询）' : '内置模拟数据（SDK 存储形态）'}
+                        className={`obs-source-badge ${usingApi ? 'obs-source-badge-api' : ''} ${usingApi && tasks.error ? 'obs-source-badge-err' : ''}`}
+                        title={usingApi
+                            ? (tasks.error ? `查询服务连接失败：${tasks.error}` : '数据来自 Observability Workflow Query Service（实时查询）')
+                            : '内置模拟数据（SDK 存储形态）'}
                     >
-                        {!sourceLabel ? '正在连接数据源…' : usingApi ? '查询服务 · 实时' : '模拟数据 · SDK 存储形态'}
+                        {!sourceLabel ? '正在连接数据源…'
+                            : usingApi ? (tasks.error ? '查询服务 · 连接失败' : '查询服务 · 实时')
+                            : '模拟数据 · SDK 存储形态'}
                     </span>
                     <button type="button" className="obs-btn" onClick={tasks.reload} title="重新拉取协作任务数据">
                         <IconRefresh />

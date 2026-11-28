@@ -1,7 +1,7 @@
 ﻿{
-  "_comment": "Observation Center 部署期配置模板。复制为 runtime-config.json 并随插件一起部署（不参与构建、不提交含地址的版本）。baseUrl 取值：\"\" = 与门户同源，走门户 nginx 的 /api/observability/ 与 /api/v1/observability/ 反代（推荐，浏览器不直接访问查询服务）；\"https://<host>\" = 直连查询服务（需有效证书 + CORS）；省略或留空白 = 使用内置模拟数据。",
+  "_comment": "Observation Center 部署期配置模板。复制为 runtime-config.json 并随插件一起部署（不参与构建、不提交含地址的版本）。baseUrl 为查询服务地址（协议 + 主机，不含路径），插件按接口文档直接调用 /api/v1/observability/...；省略或留空白 = 使用内置模拟数据。",
   "obsApi": {
-    "baseUrl": "",
+    "baseUrl": "https://<query-service-host>",
     "timeoutMs": 20000,
     "limit": 50
   }
