@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { useState } from 'react';
 import { AGENT_LABELS, TASK_TYPE_LABELS } from '../lib/constants';
 import { fmtAgo, fmtMs, fmtTime } from '../lib/format';
+import { explainNetworkError, summarizeNetworkError } from '../lib/net-error';
 import { StatusPill, SummaryChips } from '../ui/common';
 import { IconChevronRight, IconRefresh, IconSearch } from '../ui/icons';
 import { useResizableColumns } from '../hooks/useResizableColumns';
@@ -53,7 +54,13 @@ export function TaskListView({ loading, error, dataset, onOpen, onOpenBusiness, 
             )}
             {error && !dataset && (
                 <div className="obs-list-empty">
-                    <p className="obs-error-title">协作任务数据加载失败（{error}）</p>
+                    <p className="obs-error-title">协作任务数据加载失败</p>
+                    <p className="obs-panel-note">{summarizeNetworkError(error)}</p>
+                    {explainNetworkError(error).length > 0 && (
+                        <ul className="obs-detail-hint">
+                            {explainNetworkError(error).map((h, i) => <li key={i}>{h}</li>)}
+                        </ul>
+                    )}
                     <button type="button" className="obs-btn obs-btn-primary" onClick={onReload}><IconRefresh /><span>重试</span></button>
                 </div>
             )}

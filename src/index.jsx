@@ -11,6 +11,8 @@ import { ThirdPartyObservability } from './ui/third-party';
 
 export default function ObservationCenterPlugin() {
     const tasks = useCollabTasks();
+    // 用实际加载列表时走的数据源来判断，而不是配置的瞬时值：
+    // 列表加载完成后 source 即确定，之后打开详情必须与列表同源，避免串到另一条路径。
     const usingApi = tasks.source === 'api';
     // view: null = 列表；'raw' = 原始观测信号（Metric/Trace/Log）；'business' = 业务观测
     const [selected, setSelected] = useState(null);
@@ -29,6 +31,8 @@ export default function ObservationCenterPlugin() {
     const detailLoading = usingApi && selected && tasks.detail.loading && tasks.detail.runId === selected?.runId;
     const detailError = usingApi && selected && !tasks.detail.loading && tasks.detail.error && tasks.detail.runId === selected?.runId
         ? tasks.detail.error : null;
+    // 数据源标识：列表未加载完时按配置显示（配置文件已加载后才渲染列表，此处不会误导）
+    const sourceLabel = tasks.source || (tasks.loading ? null : 'mock');
 
     return (
         <div className="obs-plugin-root">
@@ -41,10 +45,14 @@ export default function ObservationCenterPlugin() {
                 </div>
                 <div className="obs-toolbar-actions">
                     <span
-                        className={`obs-source-badge ${usingApi ? 'obs-source-badge-api' : ''}`}
-                        title={usingApi ? '数据来自 Observability Workflow Query Service（实时查询）' : '内置模拟数据（SDK 存储形态）'}
+                        className={`obs-source-badge ${usingApi ? 'obs-source-badge-api' : ''} ${usingApi && tasks.error ? 'obs-source-badge-err' : ''}`}
+                        title={usingApi
+                            ? (tasks.error ? `查询服务连接失败：${tasks.error}` : '数据来自 Observability Workflow Query Service（实时查询）')
+                            : '内置模拟数据（SDK 存储形态）'}
                     >
-                        {usingApi ? '查询服务 · 实时' : '模拟数据 · SDK 存储形态'}
+                        {!sourceLabel ? '正在连接数据源…'
+                            : usingApi ? (tasks.error ? '查询服务 · 连接失败' : '查询服务 · 实时')
+                            : '模拟数据 · SDK 存储形态'}
                     </span>
                     <button type="button" className="obs-btn" onClick={tasks.reload} title="重新拉取协作任务数据">
                         <IconRefresh />
