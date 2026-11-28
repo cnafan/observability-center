@@ -42,8 +42,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import net.openan.observability.Observability;
 import net.openan.observability.ObservabilitySdk;
-import net.openan.observability.ObservationSpan;
-import net.openan.observability.SignalKind;
 import net.openan.observability.SdkConfig;
 import org.a2aproject.sdk.spec.AgentCard;
 
@@ -68,7 +66,7 @@ public final class RoleMain {
         CountDownLatch shutdown = new CountDownLatch(1);
         HttpMockAgentServer server = null;
         DefaultWorkflowEngineClient ownedClient = null;
-        HttpWorkflowEngineClient client = null;
+        WorkflowEngineClient client = null;
         Map<String, Object> workflowReport = null;
         boolean flushed = false;
 
@@ -96,7 +94,7 @@ public final class RoleMain {
                                         config.getSendTimeoutSeconds(), observe, null, traceParents),
                                 config),
                         config);
-                client = new HttpWorkflowEngineClient(ownedClient);
+                client = new LocalTaskWorkflowEngineClient(new HttpWorkflowEngineClient(ownedClient), observe, spec.agentName());
                 server = HttpMockAgentServer.start(
                         spec.agentName(),
                         new MockAgentRouter(
@@ -124,15 +122,7 @@ public final class RoleMain {
             System.out.flush();
 
             if (spec == RoleSpec.WAIMO) {
-                ObservationSpan traceParent = observe.trace(
-                        "a2at.workflow",
-                        SignalKind.INTERNAL,
-                        Map.of(
-                                "workflow.id", "complaint-handling",
-                                "workflow.type", "complaint-demo",
-                                "workflow.status", "running"));
-                traceParents.setFallbackParent(traceParent);
-                try (traceParent; var scope = traceParent.makeCurrent()) {
+                try {
                     WorkflowEngineClientConfig config = clientConfig();
                     AgentCard transport = card(RoleSpec.TRANSPORT, "demo.transport.url");
                     List<AgentCard> cards = List.of(
@@ -146,11 +136,11 @@ public final class RoleMain {
                                     new SocketA2AJavaClientRuntime(
                                             config.getSendTimeoutSeconds(),
                                             observe,
-                                            traceParent,
+                                            null,
                                             traceParents),
                                     config),
                             config);
-                    client = new HttpWorkflowEngineClient(ownedClient);
+                    client = new LocalTaskWorkflowEngineClient(new HttpWorkflowEngineClient(ownedClient), observe, spec.agentName());
                     workflowReport = executeWorkflow(
                             caseName,
                             runId,
@@ -161,13 +151,7 @@ public final class RoleMain {
                                     cards.get(3).supportedInterfaces().get(0).url()),
                             observabilityEnabled,
                             serviceName);
-                    if (Boolean.TRUE.equals(workflowReport.get("success"))) {
-                        traceParent.ok();
-                    } else {
-                        traceParent.error();
-                    }
                 } catch (RuntimeException | Error failure) {
-                    traceParent.error(failure);
                     throw failure;
                 }
                 flushed = sdk.flush(10, TimeUnit.SECONDS);

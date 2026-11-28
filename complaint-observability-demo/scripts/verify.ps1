@@ -72,13 +72,13 @@ if ($Case -eq 'success') {
             $failures.Add('West/East diagnosis windows did not overlap')
         }
     }
-    if (-not ($history.step -contains 'step7')) { $failures.Add('closure step is missing') }
+    if (-not ($history.step -contains '投诉报结')) { $failures.Add('closure step is missing') }
 }
 else {
     if ($report.success) { $failures.Add('authorization-denied case unexpectedly succeeded') }
     if ($history.Count -ne 5) { $failures.Add("expected 5 history entries, got $($history.Count)") }
-    if (-not ($history.step -contains 'step5')) { $failures.Add('failed dispatch step is missing') }
-    if ($history.step -contains 'step6' -or $history.step -contains 'step7') {
+    if (-not ($history.step -contains '投诉诊断处置')) { $failures.Add('failed dispatch step is missing') }
+    if ($history.step -contains '投诉报结' -or $history.step -contains '人工修复') {
         $failures.Add('downstream validation or closure ran after authorization denial')
     }
     $dispatchFailure = @($history | Where-Object { $_.errorCode -eq 'authorization.denied' })
