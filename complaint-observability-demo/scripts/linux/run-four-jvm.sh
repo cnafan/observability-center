@@ -54,6 +54,10 @@ for entry in "${roles[@]}"; do
 done
 for _ in $(seq 1 $((timeout_seconds * 2))); do [[ -f "$artifact_root/$run_id.json" ]] && break; sleep .5; done
 [[ -f "$artifact_root/$run_id.json" ]] || { echo "Workflow report timed out: $run_id" >&2; exit 1; }
+# Each role writes its report as part of its orderly shutdown.  Stop and join
+# all role processes before reading those reports so a completed workflow is
+# not reported as a false validation failure.
+cleanup
 python3 - "$artifact_root" "$case_name" "$run_id" <<'PY'
 import json, pathlib, sys
 root, case, run = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
